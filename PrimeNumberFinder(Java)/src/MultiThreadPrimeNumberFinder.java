@@ -5,11 +5,15 @@ import java.io.FileReader;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.util.ArrayList;
-import java.util.Arrays;
+import java.util.ConcurrentModificationException;
+import java.util.LinkedList;
+import java.util.Queue;
 
 import javax.swing.JFrame;
 import javax.swing.JLabel;
 import javax.swing.SwingConstants;
+
+//TODO find concerency issues with queue
 
 /**
  * finds prime numbers
@@ -17,28 +21,33 @@ import javax.swing.SwingConstants;
  * @author rosspa. Created Jun 18, 2014.
  */
 public class MultiThreadPrimeNumberFinder {
-//	private static long numberToLookTo;
+	private static final int MAX_QUEUE_SIZE = 2;
+
+	// private static long numberToLookTo;
 	private ArrayList<Long> primeNumbers;
 	private File primeNumbersFile;
 	private int counter;
 	private boolean findNewNumbers;
 	private boolean doStats;
+	private Queue<Thread> queue;
+	private long lastPrimeAdded;
 	private static JLabel label;
 
-	public MultiThreadPrimeNumberFinder(String filePath, Boolean doStats) {
+	public MultiThreadPrimeNumberFinder(String filePath, boolean doStats) {
 		this.primeNumbersFile = new File(filePath);
 		this.doStats = doStats;
-//		 NUMBER_TO_LOOK_TO = Integer.MAX_VALUE;
-//		NUMBER_TO_LOOK_TO = 1_000_000_000L;
-//		 numberToLookTo = 7823;
+		// NUMBER_TO_LOOK_TO = Integer.MAX_VALUE;
+		// NUMBER_TO_LOOK_TO = 1_000_000_000L;
+		// numberToLookTo = 7823;
 		// NUMBER_TO_LOOK_TO = (long) Math.pow(2,31);
 	}
-	
+
 	public ArrayList<Long> findPrimesUnder(long numberToLookTo) {
 		if (numberToLookTo <= 2) {
 			System.out.println("There are no prime numbers under " + numberToLookTo);
 			return new ArrayList<Long>();
 		}
+		this.queue = new LinkedList<Thread>();
 		System.out.printf("finding all primes under %,d \n", numberToLookTo);
 
 		long startLoad = System.nanoTime();
@@ -51,8 +60,9 @@ public class MultiThreadPrimeNumberFinder {
 		label.setText("0.000 %");
 
 		long startingNumb = this.primeNumbers.get(this.counter - 1);
-//		System.out.println(startingNumb + "*");
+		// System.out.println(startingNumb + "*");
 		long percentMax = numberToLookTo - startingNumb;
+		int startingThreadCount = Thread.activeCount();
 		long start = System.nanoTime();
 		long start1 = System.nanoTime();
 		int counter;
@@ -72,24 +82,122 @@ public class MultiThreadPrimeNumberFinder {
 		case 9:
 			counter = 3;
 			break;
-		default: 
+		default:
 			counter = 6;
 		}
-		for (long number = startingNumb + 2; number < numberToLookTo; number += 2,counter++) {
+		this.lastPrimeAdded = startingNumb;
+		for (long number = startingNumb + 2; number < numberToLookTo; number += 2, counter++) {
 			System.out.println("number = " + number + ", counter = " + counter);
-			if (counter !=5) {
-				if (isPrime(number)) {
-					this.primeNumbers.add(number);
-					this.findNewNumbers = true;
-					if ((System.nanoTime() - start1) > 8_333_333) {
-						label.setText(String.format("%.3f %%", 100
-								* (number - startingNumb) / (double) (percentMax)));
-						start1 = System.nanoTime();
+			if (counter != 5) {
+				while (this.queue.size() >= MAX_QUEUE_SIZE
+						|| this.lastPrimeAdded * this.lastPrimeAdded < number) {
+					System.out.print("queue = ");
+					System.out.println("before = " + queue.size());
+ 					Thread[] arr = queue.toArray(new Thread[queue.size()]);
+					System.out.println("before = " + queue.size());
+//					while (node != null) {
+					for (Thread t: arr) {
+						try {
+						System.out.print(t.toString());
+						}
+						catch (NullPointerException e) {
+							System.out.println("harmless null pointer");
+						}
+					}
+					System.out.println(", queue size = " + this.queue.size() + ", MAX_QUEUE_SIZE = "
+							+ MAX_QUEUE_SIZE + ", max = " + this.lastPrimeAdded * this.lastPrimeAdded
+							+ ", number = " + number);
+				}
+				// create new thread
+				class isPrimeThread extends Thread {
+					private long numb;
+					private boolean isPrime;
+					private boolean isDone;
+
+					public isPrimeThread(long numb) {
+						this.numb = numb;
+						this.isDone = false;
+					}
+
+					public void run() {
+						ArrayList<Long> list;
+						synchronized (primeNumbers) {
+							list = primeNumbers;
+						}
+						// System.out.println("\ninside numb = " +this.numb + ", prime numbers = " + list);
+						int k = 0;
+						long prime;
+						double cap = Math.sqrt(this.numb);
+						while ((prime = primeNumbers.get(k)) <= cap) {
+							// System.out.println(prime);
+							k++;
+							if (this.numb % prime == 0) {
+								exitNotPrime();
+								return;
+							}
+						}
+						this.isDone = true;
+						// while (queue.peek() != this) {
+						if (queue.peek() != this) {
+							this.suspend();
+							// System.out.println("numb: " + this.numb + " is finished and waiting");
+						}
+						addPrime();
+						removeFromQueue();
+					}
+
+					public synchronized void removeFromQueue() {
+						queue.poll();
+						System.out.println("numb = " + this.numb + " queue = " + queue);
+						if (!queue.isEmpty()) {
+							//FIXME concerency
+							queue.peek().resume();
+						}
+					}
+					
+					public synchronized void addPrime() {
+						primeNumbers.add(this.numb);
+						lastPrimeAdded = this.numb;
+						// System.out.println(this.numb + " is done");
+					}
+
+					private synchronized void exitNotPrime() {
+						if (queue.peek() == this) {
+							queue.poll();
+							if (!queue.isEmpty()) {
+								queue.peek().resume();
+							}
+						} else {
+							queue.remove(this);
+						}
+					}
+
+					@Override
+					public String toString() {
+						return this.numb + ", " + this.isDone + "; ";
 					}
 				}
+				isPrimeThread thread = new isPrimeThread(number);
+				thread.start();
+				this.queue.offer(thread);
+				// System.out.println("outside prime numbers = " + this.primeNumbers);
+				// System.out.println("outside queue = " + this.queue);
+
+				// if (isPrime(number)) {
+				// this.primeNumbers.add(number);
+				// this.findNewNumbers = true;
+				// if ((System.nanoTime() - start1) > 8_333_333) {
+				// label.setText(String.format("%.3f %%", 100
+				// * (number - startingNumb) / (double) (percentMax)));
+				// start1 = System.nanoTime();
+				// }
+				// }
 			} else {
 				counter = 0;
 			}
+		}
+		while (Thread.activeCount() != startingThreadCount) {
+			// System.out.println("threads = " + Thread.activeCount());
 		}
 		long start2 = System.nanoTime();
 		label.setText("Saving, Please Wait");
@@ -107,12 +215,10 @@ public class MultiThreadPrimeNumberFinder {
 			System.out.println("DONE");
 			System.out.println("Too many prime numbers to print out");
 		}
-		System.out.printf("Found %,d prime numbers from 2 through %,d\n",
-				this.primeNumbers.size(), numberToLookTo - 1);
-		System.out.printf(
-				"Aproxemently %f%% of numbers between 2 and %,d are prime\n", 100
-						* (long) (this.primeNumbers.size())
-						/ (double) (numberToLookTo - 2), numberToLookTo);
+		System.out.printf("Found %,d prime numbers from 2 through %,d\n", this.primeNumbers.size(),
+				numberToLookTo - 1);
+		System.out.printf("Aproxemently %f%% of numbers between 2 and %,d are prime\n", 100
+				* (long) (this.primeNumbers.size()) / (double) (numberToLookTo - 2), numberToLookTo);
 		System.out.println();
 		long start3 = System.nanoTime();
 		if (this.doStats) {
@@ -129,18 +235,14 @@ public class MultiThreadPrimeNumberFinder {
 			// " is the Variance of Prime Numbers");
 			// System.out.println(primeSD +
 			// " is the Standard Deviation of Prime Numbers");
-			System.out.println(distanceMean
-					+ " is the Mean Distance between Prime Numbers");
-			System.out.println(distanceVar
-					+ " is the Variance in Distance between Prime Numbers");
-			System.out.println(distanceSD
-					+ " is the Standard Devation in Distance between Prime Numbers");
-	
+			System.out.println(distanceMean + " is the Mean Distance between Prime Numbers");
+			System.out.println(distanceVar + " is the Variance in Distance between Prime Numbers");
+			System.out.println(distanceSD + " is the Standard Devation in Distance between Prime Numbers");
+
 			System.out.println();
 		}
 		long end1 = System.nanoTime();
-		System.out.println("Took " + getTimeUnits(end + end1 - start3 - startLoad)
-				+ " total");
+		System.out.println("Took " + getTimeUnits(end + end1 - start3 - startLoad) + " total");
 		System.out.println("Took " + getTimeUnits(System.nanoTime() - startLoad) + " to load");
 		System.out.println("Took " + getTimeUnits(start2 - start) + " to solve");
 		System.out.println("Took " + getTimeUnits(end - start2) + " to save");
@@ -150,43 +252,12 @@ public class MultiThreadPrimeNumberFinder {
 		System.out.printf("Loaded %,.3f lines per second\n", speed);
 
 		frame.dispose();
+		this.deleteFile();
 		return primeNumbers;
 	}
 
-	/**
-	 * returns a string that gives the given time difference in easily read time
-	 * units
-	 * 
-	 * @param time
-	 * @return
-	 */
-	private String getTimeUnits(long time) {
-		double newTime = time;
-		if (time < 1000) {
-			return String.format("%d NanoSeconds", time);
-		} else {
-			newTime = time / 1000.0;
-			if (newTime < 1000) {
-				return String.format("%f MicroSeconds", newTime);
-			} else {
-				newTime /= 1000.0;
-				if (newTime < 1000) {
-					return String.format("%f MiliSeconds", newTime);
-				} else {
-					newTime /= 1000.0;
-					if (newTime < 300) {
-						return String.format("%f Seconds", newTime);
-					} else {
-						newTime /= 60.0;
-						if (newTime < 180) {
-							return String.format("%f Minutes", newTime);
-						} else {
-							return String.format("%f Hours", newTime / 60.0);
-						}
-					}
-				}
-			}
-		}
+	private void deleteFile() {
+		this.primeNumbersFile.delete();
 	}
 
 	/**
@@ -209,18 +280,18 @@ public class MultiThreadPrimeNumberFinder {
 		return true;
 	}
 
-//	private double loadsPrimeList() {
-//		long end = -1;
-//		long start = 0;
-//		this.counter = 0;
-////		try {
-////			this.primeNumbers = Files.readAllLines(Paths.get("src/Prime Number.txt"), Charset.forName("US-ASCII"));
-////		} catch (IOException exception) {
-////			// TODO Auto-generated catch-block stub.
-////			exception.printStackTrace();
-////		}
-//		return this.counter / ((end - start) / 1_000_000_000.0);
-//	}
+	// private double loadsPrimeList() {
+	// long end = -1;
+	// long start = 0;
+	// this.counter = 0;
+	// // try {
+	// // this.primeNumbers = Files.readAllLines(Paths.get("src/Prime Number.txt"), Charset.forName("US-ASCII"));
+	// // } catch (IOException exception) {
+	// // // TODO Auto-generated catch-block stub.
+	// // exception.printStackTrace();
+	// // }
+	// return this.counter / ((end - start) / 1_000_000_000.0);
+	// }
 
 	private double loadPrimeList(long numberToLoadTo) {
 		this.primeNumbers = new ArrayList<Long>((int) (numberToLoadTo / 10));
@@ -281,7 +352,7 @@ public class MultiThreadPrimeNumberFinder {
 						writer.println(number);
 					}
 				} finally {
- 					writer.close();
+					writer.close();
 				}
 			} catch (IOException e) {
 				String msg = "Unable to overwrite Prime Number file: " + e.getMessage();
@@ -328,8 +399,7 @@ public class MultiThreadPrimeNumberFinder {
 			// - k - 1));
 			this.primeNumbers.remove(numb - k);
 			if (k % 10000 == 0) {
-				label.setText(String.format("%.2f %% of stats",
-						100 * (k / (double) (numb))));
+				label.setText(String.format("%.2f %% of stats", 100 * (k / (double) (numb))));
 			}
 		}
 		return list;
@@ -371,5 +441,40 @@ public class MultiThreadPrimeNumberFinder {
 		for (int numb : list)
 			temp += (mean - numb) * (mean - numb);
 		return temp / (double) (list.length);
+	}
+
+	/**
+	 * returns a string that gives the given time difference in easily read time units
+	 * 
+	 * @param time
+	 * @return
+	 */
+	private String getTimeUnits(long time) {
+		double newTime = time;
+		if (time < 1000) {
+			return String.format("%d NanoSeconds", time);
+		} else {
+			newTime = time / 1000.0;
+			if (newTime < 1000) {
+				return String.format("%f MicroSeconds", newTime);
+			} else {
+				newTime /= 1000.0;
+				if (newTime < 1000) {
+					return String.format("%f MiliSeconds", newTime);
+				} else {
+					newTime /= 1000.0;
+					if (newTime < 300) {
+						return String.format("%f Seconds", newTime);
+					} else {
+						newTime /= 60.0;
+						if (newTime < 180) {
+							return String.format("%f Minutes", newTime);
+						} else {
+							return String.format("%f Hours", newTime / 60.0);
+						}
+					}
+				}
+			}
+		}
 	}
 }
